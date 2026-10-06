@@ -12,19 +12,23 @@ use esp_hal::timer::timg::TimerGroup;
 
 use esp_radio::ble::controller::BleConnector;
 use bt_hci::controller::ExternalController;
-use trouble_host::prelude::*;
 
 use embassy_executor::Spawner;
-use embassy_time::{Duration, Timer};
+use embedded_storage_async::nor_flash::NorFlash;
+use embedded_storage_async::nor_flash::ReadNorFlash;
+use embassy_time::Delay;
 
-use log::info;
+use log::LevelFilter;
 
-use esp_backtrace as _;
+#[panic_handler]
+fn panic(panic_info: &core::panic::PanicInfo) -> ! {
+    log::info!("{}", panic_info);
+    loop {}
+}
 
 extern crate alloc;
 
-const CONNECTIONS_MAX: usize = 1;
-const L2CAP_CHANNELS_MAX: usize = 1;
+
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -37,9 +41,12 @@ esp_bootloader_esp_idf::esp_app_desc!();
 #[esp_rtos::main]
 async fn main(spawner: Spawner) -> ! {
     // generator version: 1.4.0
-    // generator parameters: -o esp32c6 -o esp32c6-mini-1 -o unstable-hal -o alloc -o embassy -o ble-trouble -o log -o esp-backtrace -o zed -o vscode -o nightly-aarch64-apple-darwin
-
+    // generator parameters: -o esp32c6 -o esp32c6-mini-1 -o unstable-hal -o embassy -o alloc -o ble-trouble -o probe-rs -o agents -o zed -o nightly-aarch64-apple-darwin
     esp_println::logger::init_logger_from_env();
+
+    // rtt_target::rtt_init_print!();
+    log::set_max_level(LevelFilter::Info);
+    log::info!("info: bla");
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
@@ -66,22 +73,25 @@ async fn main(spawner: Spawner) -> ! {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_rtos::start(timg0.timer0, peripherals.FROM_CPU_INTR0);
 
-    info!("Embassy initialized!");
+    log::info!("Embassy initialized!");
+
 
     // find more examples https://github.com/embassy-rs/trouble/tree/main/examples/esp32
     let transport = BleConnector::new(peripherals.BT, Default::default()).unwrap();
     let ble_controller = ExternalController::<_, 1>::new(transport);
-    let mut resources: HostResources<_, DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> =
-        HostResources::new();
-    let _stack = trouble_host::new(ble_controller, &mut resources).build();
 
-    // TODO: Spawn some tasks
+    let flash = esp_storage::FlashStorage::new(peripherals.FLASH);
+    let capacity = flash.capacity() as u32;
+    let mut flash = embassy_embedded_hal::adapter::BlockingAsync::new(flash);
+
+    // let capacity = <embassy_embedded_hal::adapter::BlockingAsync<_> as ReadNorFlash>::CAPACITY as u32;
+    let storage_range = 0..capacity;
+
     let _ = spawner;
+    esp_ble::ble_bas_peripheral_bonding::run(ble_controller, &mut flash, storage_range).await;
+    // esp_ble::ble_bas_peripheral_bonding::run(ble_controller, storage_range).await;
 
-    loop {
-        info!("Hello world!");
-        Timer::after(Duration::from_secs(1)).await;
-    }
+    unreachable!();
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v1.2.2/examples
 }

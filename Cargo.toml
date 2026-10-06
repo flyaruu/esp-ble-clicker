@@ -1,6 +1,6 @@
 [package]
 edition      = "2024"
-name         = "esp-ble-keyboard"
+name         = "esp-ble"
 rust-version = "1.95"
 version      = "0.1.0"
 
@@ -9,42 +9,42 @@ name = "esp-ble-keyboard"
 path = "./src/bin/main.rs"
 
 [dependencies]
-esp-hal = { version = "~1.2.2", features = ["esp32c6", "log-04", "unstable"] }
+esp-hal = { version = "~1.2.2", features = ["esp32c6", "unstable", "log-04"] }
 
 esp-rtos = { version = "0.4.0", features = [
   "embassy",
   "esp-alloc",
   "esp-radio",
   "esp32c6",
-  "log-04",
 ] }
 
-esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c6", "log-04"] }
-log                    = "0.4.27"
+esp-bootloader-esp-idf = { version = "0.6.0", features = ["esp32c6"] }
 
 bt-hci = "0.9.0"
-embassy-executor = { version = "0.10.0", features = ["log"] }
-embassy-time = { version = "0.5.0", features = ["log"] }
+embassy-executor = { version = "0.10.0", features = [] }
+embassy-time = "0.5.0"
 embedded-io = "0.7.1"
 embedded-io-async = "0.7.0"
 esp-alloc = { version = "0.11.0", features = ["esp32c6"] }
-esp-backtrace = { version = "0.20.0", features = [
-  "esp32c6",
-  "panic-handler",
-  "println",
-] }
-esp-println = { version = "0.18.0", features = ["esp32c6", "log-04"] }
 esp-radio = { version = "1.0.0-beta.1", features = [
   "ble",
   "esp-alloc",
   "esp32c6",
-  "log-04",
   "unstable",
 ] }
-trouble-host = { version = "0.7.0", features = ["gatt"] }
+# rtt-target = { version = "0.6.2", features = ["log"] }
+trouble-host = { version = "0.7.0", features = ["gatt", "security", "serde"] }
 
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
+embassy-futures = "0.1.2"
+log = "0.4.34"
+embedded-storage-async = "0.4.2"
+sequential-storage = { version = "8.0.2", features = ["postcard"] }
+serde = { version = "1.0.229", default-features = false, features = ["derive"] }
+esp-storage = { version = "0.10.0", features = ["esp32c6", "embedded-storage"] }
+embassy-embedded-hal = "0.6.0"
+esp-println = { version = "0.18.0", features = ["esp32c6", "log-04"] }
 
 
 # For fine tuning these settings, please refer to https://doc.rust-lang.org/cargo/reference/profiles.html
