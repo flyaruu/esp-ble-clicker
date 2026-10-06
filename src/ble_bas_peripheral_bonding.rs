@@ -1,4 +1,5 @@
 use core::ops::Range;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_futures::join::join;
 use embassy_futures::select::select;
@@ -22,13 +23,44 @@ const L2CAP_CHANNELS_MAX: usize = 4; // Signal + att
 struct Server {
     battery_service: BatteryService,
     hid_service: HidService,
+    device_information_service: DeviceInformationService,
 }
 
-static DESC: [u8; 67] = [
-    5u8, 1u8, 9u8, 6u8, 161u8, 1u8, 5u8, 7u8, 25u8, 224u8, 41u8, 231u8, 21u8, 0u8, 37u8, 1u8, 117u8, 1u8, 149u8, 8u8,
-    129u8, 2u8, 21u8, 0u8, 38u8, 255u8, 0u8, 117u8, 8u8, 149u8, 1u8, 129u8, 3u8, 5u8, 8u8, 25u8, 1u8, 41u8, 5u8, 37u8,
-    1u8, 117u8, 1u8, 149u8, 5u8, 145u8, 2u8, 149u8, 3u8, 145u8, 3u8, 5u8, 7u8, 25u8, 0u8, 41u8, 221u8, 38u8, 255u8,
-    0u8, 117u8, 8u8, 149u8, 6u8, 129u8, 0u8, 192u8,
+// Standard boot-compatible keyboard report descriptor. The report is eight bytes:
+// modifiers, reserved byte, and six simultaneous key usages.
+static DESC: [u8; 63] = [
+    0x05, 0x01, // Generic Desktop
+    0x09, 0x06, // Keyboard
+    0xA1, 0x01, // Application
+    0x05, 0x07, // Keyboard/Keypad
+    0x19, 0xE0,
+    0x29, 0xE7,
+    0x15, 0x00,
+    0x25, 0x01,
+    0x75, 0x01,
+    0x95, 0x08,
+    0x81, 0x02, // Modifier input
+    0x95, 0x01,
+    0x75, 0x08,
+    0x81, 0x01, // Reserved input
+    0x95, 0x05,
+    0x75, 0x01,
+    0x05, 0x08,
+    0x19, 0x01,
+    0x29, 0x05,
+    0x91, 0x02, // LED output
+    0x95, 0x01,
+    0x75, 0x03,
+    0x91, 0x01, // Padding output
+    0x95, 0x06,
+    0x75, 0x08,
+    0x15, 0x00,
+    0x25, 0x65,
+    0x05, 0x07,
+    0x19, 0x00,
+    0x29, 0x65,
+    0x81, 0x00, // Key input
+    0xC0,
 ];
 
 #[gatt_service(uuid = service::HUMAN_INTERFACE_DEVICE)]
@@ -36,7 +68,7 @@ pub(crate) struct HidService {
     #[characteristic(uuid = "2a4a", read, value = [0x01, 0x01, 0x00, 0x03], permissions(encrypted))]
     pub(crate) hid_info: [u8; 4],
     #[characteristic(uuid = "2a4b", read, value = DESC, permissions(encrypted))]
-    pub(crate) report_map: [u8; 67],
+    pub(crate) report_map: [u8; 63],
     #[characteristic(uuid = "2a4c", write_without_response, permissions(encrypted))]
     pub(crate) hid_control_point: u8,
     #[characteristic(uuid = "2a4e", read, write_without_response, value = 1, permissions(encrypted))]
@@ -47,6 +79,16 @@ pub(crate) struct HidService {
     #[descriptor(uuid = "2908", read = encrypted, value = [0u8, 2u8])]
     #[characteristic(uuid = "2a4d", read, write, write_without_response, permissions(encrypted))]
     pub(crate) output_keyboard: [u8; 1],
+    #[characteristic(uuid = "2a22", read, notify, permissions(encrypted))]
+    pub(crate) boot_keyboard_input_report: [u8; 8],
+    #[characteristic(uuid = "2a32", read, write, write_without_response, permissions(encrypted))]
+    pub(crate) boot_keyboard_output_report: [u8; 1],
+}
+
+#[gatt_service(uuid = service::DEVICE_INFORMATION)]
+struct DeviceInformationService {
+    #[characteristic(uuid = "2a50", read, value = [0x01, 0x5e, 0x04, 0x34, 0x12, 0x01, 0x00])]
+    pnp_id: [u8; 7],
 }
 
 /// Battery service
@@ -81,21 +123,35 @@ where
     let mut resources: HostResources<C, DefaultPacketPool, CONNECTIONS_MAX, L2CAP_CHANNELS_MAX> = HostResources::new();
     let stack = trouble_host::new(controller, &mut resources)
         .set_random_address(address)
+        // This device has no display or input controls. Just Works pairing gives
+        // encryption without requiring a passkey/MITM interaction from the host.
+        .set_io_capabilities(IoCapabilities::NoInputNoOutput)
         .build();
 
     let mut map_storage = MapStorage::<(), _, _>::new(storage, MapConfig::new(storage_range), Cache::new_uncached());
     let mut data_buffer = [0; 64];
-
-
-    let mut bond_stored =
-        if let Some(StoredBondInformation(bond_info)) = map_storage.fetch_item(&mut data_buffer, &()).await.unwrap() {
-            info!("Bond stored. Adding to stack.");
-            stack.add_bond_information(bond_info).unwrap();
-            true
-        } else {
-            info!("No bond stored.");
+    let mut bond_stored = match map_storage.fetch_item(&mut data_buffer, &()).await {
+        Ok(Some(StoredBondInformation(bond_info))) => {
+            match stack.add_bond_information(bond_info) {
+                Ok(()) => {
+                    info!("Bond stored. Added it to the BLE stack.");
+                    true
+                }
+                Err(e) => {
+                    warn!("Stored bond could not be restored: {:?}", e);
+                    false
+                }
+            }
+        }
+        Ok(None) => {
+            info!("No stored bond.");
             false
-        };
+        }
+        Err(e) => {
+            warn!("Could not read stored bond: {:?}", e);
+            false
+        }
+    };
 
     let runner = stack.runner();
     let mut peripheral = stack.peripheral();
@@ -107,14 +163,20 @@ where
     }))
     .unwrap();
 
+    let link_encrypted = AtomicBool::new(false);
+
     let _ = join(ble_task(runner), async {
         loop {
-            match advertise("TrouBLE", &mut peripheral, &server).await {
+            match advertise("TrouBLE Keyboard", &mut peripheral, &server).await {
                 Ok(conn) => {
                     conn.raw().set_bondable(true).unwrap();
+                    if let Err(e) = conn.raw().request_security() {
+                        warn!("[gatt] failed to request security: {:?}", e);
+                    }
                     // set up tasks when the connection is established to a central, so they don't run when no one is connected.
-                    let a = gatt_events_task(&mut map_storage, &mut data_buffer, &server, &conn, &mut bond_stored);
-                    let b = custom_task(&server, &conn, &stack);
+                    link_encrypted.store(false, Ordering::Relaxed);
+                    let a = gatt_events_task(&mut map_storage, &mut data_buffer, &server, &conn, &mut bond_stored, &link_encrypted);
+                    let b = custom_task(&server, &conn, &link_encrypted);
                     // run until any task ends (usually because the connection has been closed),
                     // then return to advertising state.
                     select(a, b).await;
@@ -166,11 +228,51 @@ async fn gatt_events_task<S: NorFlash>(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, DefaultPacketPool>,
     bond_stored: &mut bool,
+    link_encrypted: &AtomicBool,
 ) -> Result<(), Error> {
     let level = server.battery_service.level;
     let reason = loop {
         match conn.next().await {
             GattConnectionEvent::Disconnected { reason } => break reason,
+
+            GattConnectionEvent::PassKeyDisplay(passkey) => {
+                info!("[gatt] passkey display: {:?}", passkey);
+                // Show this to user on device UI/serial if needed.
+            }
+
+            GattConnectionEvent::PassKeyConfirm(passkey) => {
+                info!("[gatt] passkey confirm: {:?}", passkey);
+                if let Err(e) = conn.raw().pass_key_confirm() {
+                    warn!("[gatt] pass_key_confirm failed: {:?}", e);
+                }
+            }
+
+            GattConnectionEvent::PassKeyInput => {
+                // Replace with user-provided key path if you have one.
+                let key: u32 = 123_456;
+                info!("[gatt] passkey input requested, entering {}", key);
+                if let Err(e) = conn.raw().pass_key_input(key) {
+                    warn!("[gatt] pass_key_input failed: {:?}", e);
+                }
+            }
+
+            GattConnectionEvent::Encrypted { security_level, bond } => {
+                info!(
+                    "[gatt] encrypted: {:?}, authenticated={}, bonded={}",
+                    security_level,
+                    security_level.authenticated(),
+                    bond.is_some()
+                );
+
+                if security_level.encrypted() {
+                    // HID permissions require encryption, not MITM authentication.
+                    link_encrypted.store(true, Ordering::Relaxed);
+                    info!("[gatt] encrypted link established (MITM={})", security_level.authenticated());
+                } else {
+                    link_encrypted.store(false, Ordering::Relaxed);
+                    warn!("[gatt] link is not encrypted yet");
+                }
+            }
             GattConnectionEvent::PairingComplete { security_level, bond } => {
                 info!("[gatt] pairing complete: {:?}", security_level);
                 if let Some(bond) = bond {
@@ -228,9 +330,10 @@ async fn advertise<'values, 'server, C: Controller>(
     let len = AdStructure::encode_slice(
         &[
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
-            AdStructure::IncompleteServiceUuids16(&[
+            AdStructure::CompleteServiceUuids16(&[
                 service::BATTERY.to_le_bytes(),
                 service::HUMAN_INTERFACE_DEVICE.to_le_bytes(),
+                service::DEVICE_INFORMATION.to_le_bytes(),
             ]),
             AdStructure::CompleteLocalName(name.as_bytes()),
         ],
@@ -251,31 +354,65 @@ async fn advertise<'values, 'server, C: Controller>(
     Ok(conn)
 }
 
-/// Example task to use the BLE notifier interface.
-/// This task will notify the connected central of a counter value every 2 seconds.
-/// It will also read the RSSI value every 2 seconds.
-/// and will stop when the connection is closed by the central or an error occurs.
-async fn custom_task<C: Controller, P: PacketPool>(
+/// Send a test keyboard key after the encrypted link is ready.
+/// This task stops when the connection is closed or report delivery fails.
+async fn custom_task<P: PacketPool>(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, P>,
-    stack: &Stack<'_, C, P>,
+    link_encrypted: &AtomicBool,
 ) {
-    let mut tick: u8 = 0;
-    let level = server.battery_service.level;
+    // Do not try to generate reports until the encrypted GATT link is ready.
+    // The delay also gives the host time to discover the HID service and enable
+    // notifications.
+    if !link_encrypted.load(Ordering::Relaxed) {
+        info!("[custom_task] waiting for encrypted link");
+        while !link_encrypted.load(Ordering::Relaxed) {
+            Timer::after_millis(250).await;
+        }
+    }
+    Timer::after_secs(1).await;
+
+    if send_keyboard_key(server, conn, 0x04).await.is_err() {
+        info!("[custom_task] error sending keyboard key report");
+    }
+}
+
+async fn send_keyboard_report<P: PacketPool>(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, P>,
+    report: [u8; 8],
+) -> Result<(), Error> {
+    // Report Protocol (1) uses the report characteristic; Boot Protocol (0)
+    // uses the boot input characteristic. Only notify the selected report, and
+    // only once its CCCD has been enabled by the host.
+    if conn
+        .get(&server.hid_service.protocol_mode)
+        .unwrap_or(1)
+        == 0
+    {
+        let report_characteristic = &server.hid_service.boot_keyboard_input_report;
+        if report_characteristic.should_notify(conn) {
+            report_characteristic.notify(conn, &report, true).await?;
+        }
+    } else {
+        let report_characteristic = &server.hid_service.input_keyboard;
+        if report_characteristic.should_notify(conn) {
+            report_characteristic.notify(conn, &report, true).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn send_keyboard_key<P: PacketPool>(
+    server: &Server<'_>,
+    conn: &GattConnection<'_, '_, P>,
+    keycode: u8,
+) -> Result<(), Error> {
     loop {
-        tick = tick.wrapping_add(1);
-        info!("[custom_task] notifying connection of tick {}", tick);
-        if level.notify(conn, &tick, true).await.is_err() {
-            info!("[custom_task] error notifying connection");
-            break;
-        };
-        // read RSSI (Received Signal Strength Indicator) of the connection.
-        if let Ok(rssi) = conn.raw().rssi(stack).await {
-            info!("[custom_task] RSSI: {:?}", rssi);
-        } else {
-            info!("[custom_task] error getting RSSI");
-            break;
-        };
-        Timer::after_secs(2).await;
+        let press = [0, 0, keycode, 0, 0, 0, 0, 0];
+        send_keyboard_report(server, conn, press).await?;
+        Timer::after_millis(20).await;
+        send_keyboard_report(server, conn, [0; 8]).await?;
+        Timer::after_millis(2000).await;
     }
 }
