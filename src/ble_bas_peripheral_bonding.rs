@@ -18,6 +18,9 @@ const CONNECTIONS_MAX: usize = 1;
 /// Max number of L2CAP channels.
 const L2CAP_CHANNELS_MAX: usize = 4; // Signal + att
 
+// Appearance AD value: Human Interface Device / Keyboard (0x03c1), little-endian.
+const KEYBOARD_APPEARANCE: [u8; 2] = appearance::human_interface_device::KEYBOARD.to_le_bytes();
+
 // GATT Server definition
 #[gatt_server]
 struct Server {
@@ -327,7 +330,7 @@ async fn advertise<'values, 'server, C: Controller>(
     server: &'server Server<'values>,
 ) -> Result<GattConnection<'values, 'server, DefaultPacketPool>, BleHostError<C::Error>> {
     let mut advertiser_data = [0; 31];
-    let len = AdStructure::encode_slice(
+    let adv_len = AdStructure::encode_slice(
         &[
             AdStructure::Flags(LE_GENERAL_DISCOVERABLE | BR_EDR_NOT_SUPPORTED),
             AdStructure::CompleteServiceUuids16(&[
@@ -335,16 +338,26 @@ async fn advertise<'values, 'server, C: Controller>(
                 service::HUMAN_INTERFACE_DEVICE.to_le_bytes(),
                 service::DEVICE_INFORMATION.to_le_bytes(),
             ]),
-            AdStructure::CompleteLocalName(name.as_bytes()),
+            // trouble-host 0.7 has no named Appearance variant, so encode AD
+            // type 0x19 explicitly.
+            AdStructure::Unknown {
+                ty: 0x19,
+                data: &KEYBOARD_APPEARANCE,
+            },
         ],
         &mut advertiser_data[..],
+    )?;
+    let mut scan_data = [0; 31];
+    let scan_len = AdStructure::encode_slice(
+        &[AdStructure::CompleteLocalName(name.as_bytes())],
+        &mut scan_data[..],
     )?;
     let advertiser = peripheral
         .advertise(
             &Default::default(),
             Advertisement::ConnectableScannableUndirected {
-                adv_data: &advertiser_data[..len],
-                scan_data: &[],
+                adv_data: &advertiser_data[..adv_len],
+                scan_data: &scan_data[..scan_len],
             },
         )
         .await?;
