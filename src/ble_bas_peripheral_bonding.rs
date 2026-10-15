@@ -1,4 +1,6 @@
 use core::ops::Range;
+
+use crate::button::{ClickerEvents, ClickerReceiver};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use embassy_futures::join::join;
@@ -113,7 +115,12 @@ struct StoredBondInformation(pub(crate) BondInformation);
 impl<'a> PostcardValue<'a> for StoredBondInformation {}
 
 /// Run the BLE stack.
-pub async fn run<C, S>(controller: C, storage: &mut S, storage_range: Range<u32>)
+pub async fn run<C, S>(
+    controller: C,
+    storage: &mut S,
+    storage_range: Range<u32>,
+    clicker_events: ClickerReceiver,
+)
 where
     C: Controller,
     S: NorFlash,
@@ -179,7 +186,7 @@ where
                     // set up tasks when the connection is established to a central, so they don't run when no one is connected.
                     link_encrypted.store(false, Ordering::Relaxed);
                     let a = gatt_events_task(&mut map_storage, &mut data_buffer, &server, &conn, &mut bond_stored, &link_encrypted);
-                    let b = custom_task(&server, &conn, &link_encrypted);
+                    let b = custom_task(&server, &conn, &link_encrypted, clicker_events);
                     // run until any task ends (usually because the connection has been closed),
                     // then return to advertising state.
                     select(a, b).await;
@@ -373,6 +380,7 @@ async fn custom_task<P: PacketPool>(
     server: &Server<'_>,
     conn: &GattConnection<'_, '_, P>,
     link_encrypted: &AtomicBool,
+    clicker_events: ClickerReceiver,
 ) {
     // Do not try to generate reports until the encrypted GATT link is ready.
     // The delay also gives the host time to discover the HID service and enable
@@ -383,10 +391,18 @@ async fn custom_task<P: PacketPool>(
             Timer::after_millis(250).await;
         }
     }
-    Timer::after_secs(1).await;
+    loop {
+        let keycode = match clicker_events.receive().await {
+            ClickerEvents::Forward => 79,
+            ClickerEvents::Back => 80,
+        };
 
-    if send_keyboard_key(server, conn, 0x04).await.is_err() {
-        info!("[custom_task] error sending keyboard key report");
+        if send_keyboard_key(server, conn, keycode).await.is_err() {
+            info!("[custom_task] error sending keyboard key report");
+            break;
+        }
+
+
     }
 }
 
@@ -421,11 +437,10 @@ async fn send_keyboard_key<P: PacketPool>(
     conn: &GattConnection<'_, '_, P>,
     keycode: u8,
 ) -> Result<(), Error> {
-    loop {
-        let press = [0, 0, keycode, 0, 0, 0, 0, 0];
-        send_keyboard_report(server, conn, press).await?;
-        Timer::after_millis(20).await;
-        send_keyboard_report(server, conn, [0; 8]).await?;
-        Timer::after_millis(2000).await;
-    }
+    let press = [0, 0, keycode, 0, 0, 0, 0, 0];
+    send_keyboard_report(server, conn, press).await?;
+    Timer::after_millis(20).await;
+    send_keyboard_report(server, conn, [0; 8]).await?;
+    Timer::after_millis(20).await;
+    Ok(())
 }

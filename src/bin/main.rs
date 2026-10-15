@@ -8,15 +8,18 @@
 #![deny(clippy::large_stack_frames)]
 
 use esp_hal::clock::CpuClock;
+use esp_hal::gpio::Input;
+use esp_hal::gpio::InputConfig;
 use esp_hal::timer::timg::TimerGroup;
+use embassy_sync::{
+    blocking_mutex::raw::CriticalSectionRawMutex,
+    channel::Channel,
+};
 
 use esp_radio::ble::controller::BleConnector;
 use bt_hci::controller::ExternalController;
 
 use embassy_executor::Spawner;
-use embedded_storage_async::nor_flash::NorFlash;
-use embedded_storage_async::nor_flash::ReadNorFlash;
-use embassy_time::Delay;
 
 use log::LevelFilter;
 
@@ -27,7 +30,6 @@ fn panic(panic_info: &core::panic::PanicInfo) -> ! {
 }
 
 extern crate alloc;
-
 
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -50,6 +52,12 @@ async fn main(spawner: Spawner) -> ! {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
+
+    let cfg = InputConfig::default().with_pull(esp_hal::gpio::Pull::Up);
+
+    let back = Input::new(peripherals.GPIO8, cfg);
+    let forward = Input::new(peripherals.GPIO7, cfg);
+
 
     // The following pins are used to bootstrap the chip. They are available
                     // for use, but check the datasheet of the module for more information on them.
@@ -87,8 +95,26 @@ async fn main(spawner: Spawner) -> ! {
     // let capacity = <embassy_embedded_hal::adapter::BlockingAsync<_> as ReadNorFlash>::CAPACITY as u32;
     let storage_range = 0..capacity;
 
-    let _ = spawner;
-    esp_ble::ble_bas_peripheral_bonding::run(ble_controller, &mut flash, storage_range).await;
+    static CLICKER_EVENTS: Channel<
+        CriticalSectionRawMutex,
+        esp_ble::button::ClickerEvents,
+        4,
+    > = Channel::new();
+    let clicker_events_sender = CLICKER_EVENTS.sender();
+    let clicker_events_receiver = CLICKER_EVENTS.receiver();
+
+    spawner.spawn(
+        esp_ble::button::button_task(forward, back, clicker_events_sender)
+            .expect("failed to create button task"),
+    );
+
+    esp_ble::ble_bas_peripheral_bonding::run(
+        ble_controller,
+        &mut flash,
+        storage_range,
+        clicker_events_receiver,
+    )
+    .await;
     // esp_ble::ble_bas_peripheral_bonding::run(ble_controller, storage_range).await;
 
     unreachable!();

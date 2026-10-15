@@ -38,6 +38,7 @@ trouble-host = { version = "0.7.0", features = ["gatt", "security", "serde"] }
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
 embassy-futures = "0.1.2"
+embassy-sync = "0.8.0"
 log = "0.4.34"
 embedded-storage-async = "0.4.2"
 sequential-storage = { version = "8.0.2", features = ["postcard"] }
