@@ -14,12 +14,14 @@ pub enum ClickerEvents {
     Back,
 }
 
-pub type ClickerSender = Sender<'static, CriticalSectionRawMutex, ClickerEvents, 4>;
+pub const CLICKER_CHANNEL_SIZE: usize = 4;
+
+pub type ClickerSender = Sender<'static, CriticalSectionRawMutex, ClickerEvents, CLICKER_CHANNEL_SIZE>;
 pub type ClickerReceiver = embassy_sync::channel::Receiver<
     'static,
     CriticalSectionRawMutex,
     ClickerEvents,
-    4,
+    CLICKER_CHANNEL_SIZE,
 >;
 
 #[task]

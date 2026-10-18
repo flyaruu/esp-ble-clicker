@@ -98,7 +98,7 @@ async fn main(spawner: Spawner) -> ! {
     static CLICKER_EVENTS: Channel<
         CriticalSectionRawMutex,
         esp_ble::button::ClickerEvents,
-        4,
+        { esp_ble::button::CLICKER_CHANNEL_SIZE },
     > = Channel::new();
     let clicker_events_sender = CLICKER_EVENTS.sender();
     let clicker_events_receiver = CLICKER_EVENTS.receiver();
