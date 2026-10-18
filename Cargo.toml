@@ -5,7 +5,7 @@ rust-version = "1.95"
 version      = "0.1.0"
 
 [[bin]]
-name = "esp-ble-keyboard"
+name = "esp-ble-clicker"
 path = "./src/bin/main.rs"
 
 [dependencies]
